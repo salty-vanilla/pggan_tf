@@ -13,26 +13,27 @@ class Generator:
         self.channel = channel
         self.upsampling = upsampling_
 
+        self.blocks = []
+        with tf.variable_scope(self.name):
+            for i, f in enumerate(self.filters):
+                if i == 0:
+                    self.blocks.append(FirstGeneratorBlock(f))
+                else:
+                    self.blocks.append(GeneratorBlock(f, upsampling_))
+
     def __call__(self, x,
+                 growing_index,
                  reuse=False,
                  *args, **kwargs):
         with tf.variable_scope(self.name) as vs:
             if reuse:
                 vs.reuse_variables()
-            o = None
-            rgb_list = []
-            for i, f in enumerate(self.filters):
-                if i == 0:
-                    g = Model(x, first_g_block(x, f), name='g_%d' % i)
-                else:
-                    g = Model(inputs=x,
-                              outputs=g_block(o, f, self.upsampling),
-                              name='g_%d' % i)
-                o = g.output
-                with tf.variable_scope(None, 'toRGB'):
-                    rgb = conv2d(o, self.channel, activation_='tanh')
-                rgb_list.append(rgb)
-        return rgb_list
+            for block in self.blocks[:growing_index]:
+                print(x)
+                x = block(inputs=x)
+            with tf.variable_scope(None, 'toRGB'):
+                x = conv2d(x, self.channel, activation_='tanh')
+                return x
 
     @property
     def vars(self):
@@ -106,15 +107,16 @@ class Discriminator:
 
 if __name__ == '__main__':
     _x = tf.keras.layers.Input((512, ), batch_size=2)
-    _g = Generator(nb_growing=5, upsampling_='subpixel')
-    _d = Discriminator(nb_growing=5)
-    rgbs = _g(_x)
-    _d_real, _d_fake = _d(rgbs)
-    _d_real, _d_fake = _d(rgbs, reuse=True)
+    _g = Generator(nb_growing=5)
+    a = _g(_x, 1)
+    # _d = Discriminator(nb_growing=5)
+    # rgbs = _g(_x)
+    # _d_real, _d_fake = _d(rgbs)
+    # _d_real, _d_fake = _d(rgbs, reuse=True)
     sess = tf.keras.backend.get_session()
     tf.summary.FileWriter('./logs', graph=sess.graph)
-    sess.run(tf.global_variables_initializer())
-    import numpy as np
-    __x = np.random.uniform(size=(2, 4, 4, 512))
-    print(sess.run(_d_real[-1],
-                   feed_dict={_d.inputs[-1]: __x}))
+    # sess.run(tf.global_variables_initializer())
+    # import numpy as np
+    # __x = np.random.uniform(size=(2, 4, 4, 512))
+    # print(sess.run(_d_real[-1],
+    #                feed_dict={_d.inputs[-1]: __x}))

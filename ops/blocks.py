@@ -1,83 +1,125 @@
 import sys
 import os
-from tensorflow.python.keras.layers import Lambda
+from tensorflow.python.keras import Model
+from tensorflow.python.keras.layers import Lambda, Conv2D, UpSampling2D
 sys.path.append(os.getcwd())
 from ops.layers import *
 
 
-def first_g_block(x,
-                  filters):
-    with tf.variable_scope(None, first_g_block.__name__):
-        x = reshape(x, (1, 1, x.get_shape().as_list()[-1]))
-        x = upsampling2d(x, size=(4, 4))
-        x = conv2d(x, filters,
-                   activation_='lrelu',
-                   kernel_initializer='normal')
-        x = conv2d(x, filters,
-                   activation_='lrelu',
-                   kernel_initializer='normal')
+class FirstGeneratorBlock(Model):
+    def __init__(self, filters,
+                 name=None):
+        name = name if name is not None else self.__class__.name
+        super().__init__(name=name)
+        self.conv1 = Conv2D(filters, (3, 3),
+                            padding='same',
+                            kernel_initializer='normal')
+        self.conv2 = Conv2D(filters, (3, 3),
+                            padding='same',
+                            kernel_initializer='normal')
+
+    def call(self, inputs,
+             training=None,
+             mask=None):
+        print(inputs)
+        x = reshape(inputs, (1, 1, inputs.get_shape().as_list()[-1]))
+        x = upsampling2d(x, (4, 4))
+        x = self.conv1(x)
+        x = activation(x, 'lrelu')
+        x = self.conv2(x)
+        x = activation(x, 'lrelu')
         return x
 
 
-def g_block(x,
-            filters,
-            upsampling_='upsampling'):
-    with tf.variable_scope(None, g_block.__name__):
+class GeneratorBlock(Model):
+    def __init__(self, filters,
+                 upsampling_='upsampling',
+                 name=None):
+        name = name if name is not None else self.__class__.name
+        super().__init__(name=name)
         if upsampling_ == 'subpixel':
-            x = Lambda(lambda _x:
-                       subpixel_conv2d(_x,
-                                       filters,
-                                       activation_='lrelu'))(x)
+            self.up = Lambda(lambda _x:
+                             subpixel_conv2d(_x,
+                                             filters,
+                                             activation_='lrelu'))
         elif upsampling_ == 'deconv':
-            x = conv2d_transpose(x, filters, activation_='lrelu')
+            self.up = Lambda(lambda _x:
+                             conv2d_transpose(_x,
+                                              filters,
+                                              activation_='lrelu'))
         elif upsampling_ == 'upsampling':
-            x = upsampling2d(x)
+            self.up = UpSampling2D((2, 2))
         else:
             raise ValueError
-        x = conv2d(x, filters,
-                   activation_='lrelu',
-                   kernel_initializer='normal')
-        x = conv2d(x, filters,
-                   activation_='lrelu',
-                   kernel_initializer='normal')
+
+        self.conv1 = Conv2D(filters, (3, 3),
+                            padding='same',
+                            kernel_initializer='normal')
+        self.conv2 = Conv2D(filters, (3, 3),
+                            padding='same',
+                            kernel_initializer='normal')
+
+    def call(self, inputs,
+             training=None,
+             mask=None):
+        x = self.up(inputs)
+        x = self.conv1(x)
+        x = activation(x, 'lrelu')
+        x = self.conv2(x)
+        x = activation(x, 'lrelu')
         return x
 
 
-def last_d_block(x,
-                 filters):
-    with tf.variable_scope(None, last_d_block.__name__):
-        x = conv2d(x, filters,
-                   activation_='lrelu',
-                   kernel_initializer='normal')
-        x = conv2d(x, filters, (4, 4),
-                   activation_='lrelu',
-                   padding='valid',
-                   kernel_initializer='normal')
+class LastDiscriminatorBlock(Model):
+    def __init__(self, filters,
+                 name=None):
+        name = name if name is not None else self.__class__.name
+        super().__init__(name=name)
+        self.conv1 = Conv2D(filters, (3, 3),
+                            padding='same',
+                            kernel_initializer='normal')
+        self.conv2 = Conv2D(filters, (4, 4),
+                            padding='valid',
+                            kernel_initializer='normal')
+
+    def call(self, inputs,
+             training=None,
+             mask=None):
+        x = self.conv1(inputs)
+        x = activation(x, 'lrelu')
+        x = self.conv2(x)
         return x
 
 
-def d_block(x,
-            filters,
-            downsampling='average_pool'):
-    with tf.variable_scope(None, d_block.__name__):
-        x = conv2d(x, filters,
-                   activation_='lrelu',
-                   kernel_initializer='normal')
+class DiscriminatorBlock(Model):
+    def __init__(self, filters,
+                 downsampling='average_pool',
+                 name=None):
+        name = name if name is not None else self.__class__.name
+        super().__init__(name=name)
         if downsampling == 'average_pool':
-            x = conv2d(x, filters,
-                       activation_='lrelu',
-                       kernel_initializer='normal')
-            x = average_pool2d(x)
+            self.down = Lambda(lambda _x: average_pool2d(conv2d(_x, filters,
+                                                                activation_='lrelu',
+                                                                kernel_initializer='normal')))
         elif downsampling == 'max_pool':
-            x = conv2d(x, filters,
-                       activation_='lrelu',
-                       kernel_initializer='normal')
-            x = max_pool2d(x)
+            self.down = Lambda(lambda _x: max_pool2d(conv2d(_x, filters,
+                                                            activation_='lrelu',
+                                                            kernel_initializer='normal')))
         elif downsampling == 'stride':
-            x = conv2d(x, filters,
-                       activation_='lrelu',
-                       strides=(2, 2),
-                       kernel_initializer='normal')
+            self.down = Conv2D(filters, (3, 3),
+                               strides=(2, 2),
+                               padding='same',
+                               kernel_initializer='normal')
         else:
             raise ValueError
+        self.conv1 = Conv2D(filters, (3, 3),
+                            padding='same',
+                            kernel_initializer='normal')
+
+    def call(self, inputs,
+             training=None,
+             mask=None):
+        x = self.conv1(inputs)
+        x = activation(x, 'lrelu')
+        x = self.down(x)
         return x
