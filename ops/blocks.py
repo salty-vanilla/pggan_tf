@@ -9,7 +9,7 @@ from ops.layers import *
 class FirstGeneratorBlock(Model):
     def __init__(self, filters,
                  name=None):
-        name = name if name is not None else self.__class__.name
+        name = name if name is not None else self.__class__.__name__
         super().__init__(name=name)
         self.conv1 = Conv2D(filters, (3, 3),
                             padding='same',
@@ -21,7 +21,6 @@ class FirstGeneratorBlock(Model):
     def call(self, inputs,
              training=None,
              mask=None):
-        print(inputs)
         x = reshape(inputs, (1, 1, inputs.get_shape().as_list()[-1]))
         x = upsampling2d(x, (4, 4))
         x = self.conv1(x)
@@ -35,7 +34,7 @@ class GeneratorBlock(Model):
     def __init__(self, filters,
                  upsampling_='upsampling',
                  name=None):
-        name = name if name is not None else self.__class__.name
+        name = name if name is not None else self.__class__.__name__
         super().__init__(name=name)
         if upsampling_ == 'subpixel':
             self.up = Lambda(lambda _x:
@@ -73,7 +72,7 @@ class GeneratorBlock(Model):
 class LastDiscriminatorBlock(Model):
     def __init__(self, filters,
                  name=None):
-        name = name if name is not None else self.__class__.name
+        name = name if name is not None else self.__class__.__name__
         super().__init__(name=name)
         self.conv1 = Conv2D(filters, (3, 3),
                             padding='same',
@@ -92,29 +91,31 @@ class LastDiscriminatorBlock(Model):
 
 
 class DiscriminatorBlock(Model):
-    def __init__(self, filters,
+    def __init__(self, filters_in,
+                 filters_out,
                  downsampling='average_pool',
                  name=None):
-        name = name if name is not None else self.__class__.name
+        name = name if name is not None else self.__class__.__name__
         super().__init__(name=name)
+        self.conv1 = Conv2D(filters_in, (3, 3),
+                            padding='same',
+                            kernel_initializer='normal')
+
         if downsampling == 'average_pool':
-            self.down = Lambda(lambda _x: average_pool2d(conv2d(_x, filters,
+            self.down = Lambda(lambda _x: average_pool2d(conv2d(_x, filters_out,
                                                                 activation_='lrelu',
                                                                 kernel_initializer='normal')))
         elif downsampling == 'max_pool':
-            self.down = Lambda(lambda _x: max_pool2d(conv2d(_x, filters,
+            self.down = Lambda(lambda _x: max_pool2d(conv2d(_x, filters_out,
                                                             activation_='lrelu',
                                                             kernel_initializer='normal')))
         elif downsampling == 'stride':
-            self.down = Conv2D(filters, (3, 3),
+            self.down = Conv2D(filters_out, (3, 3),
                                strides=(2, 2),
                                padding='same',
                                kernel_initializer='normal')
         else:
             raise ValueError
-        self.conv1 = Conv2D(filters, (3, 3),
-                            padding='same',
-                            kernel_initializer='normal')
 
     def call(self, inputs,
              training=None,

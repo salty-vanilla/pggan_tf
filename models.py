@@ -1,6 +1,6 @@
-from tensorflow.python.keras import Model
 from ops.blocks import *
 from ops.layers import conv2d
+from tensorflow.python.keras.layers import Dense
 
 
 class Generator:
@@ -17,9 +17,9 @@ class Generator:
         with tf.variable_scope(self.name):
             for i, f in enumerate(self.filters):
                 if i == 0:
-                    self.blocks.append(FirstGeneratorBlock(f))
+                    self.blocks.append(FirstGeneratorBlock(f, name='block_%d' % i))
                 else:
-                    self.blocks.append(GeneratorBlock(f, upsampling_))
+                    self.blocks.append(GeneratorBlock(f, upsampling_, name='block_%d' % i))
 
     def __call__(self, x,
                  growing_index,
@@ -28,10 +28,9 @@ class Generator:
         with tf.variable_scope(self.name) as vs:
             if reuse:
                 vs.reuse_variables()
-            for block in self.blocks[:growing_index]:
-                print(x)
+            for block in self.blocks[:growing_index+1]:
                 x = block(inputs=x)
-            with tf.variable_scope(None, 'toRGB'):
+            with tf.variable_scope('toRGB_%d' % growing_index):
                 x = conv2d(x, self.channel, activation_='tanh')
                 return x
 
@@ -46,59 +45,36 @@ class Discriminator:
                  downsampling='average_pool'):
         self.name = 'models/discriminator'
         self.nb_growing = nb_growing
-        self.filters = [512, 512, 512, 512, 256, 256, 128, 64, 32][:nb_growing][::-1]
+        self.filters = [512, 512, 512, 512, 256, 256, 128, 64, 32][:nb_growing]
+        self.resolutions = [(2**(2+i), 2**(2+i)) for i in range(nb_growing)]
         self.channel = channel
         self.downsampling = downsampling
-        self.inputs = []
-        self.inputs_ = []
+        self.blocks = []
 
-    def __call__(self, rgb_list,
+        with tf.variable_scope(self.name):
+            for i in range(nb_growing):
+                if i == 0:
+                    self.blocks.append(LastDiscriminatorBlock(self.filters[i], name='block_%d' % i))
+                else:
+                    self.blocks.append(DiscriminatorBlock(self.filters[i], self.filters[i-1],
+                                                          downsampling, name='block_%d' % i))
+            self.dense = Dense(1)
+
+    def __call__(self, x,
+                 growing_index,
                  reuse=False,
                  *args, **kwargs):
         with tf.variable_scope(self.name) as vs:
             if reuse:
                 vs.reuse_variables()
-
-            d_list = []
-            o_list_ = []
-            for i, f in enumerate(self.filters):
-                if i == 0:
-                    shape = (rgb_list[self.nb_growing-i-1].get_shape().as_list()[1],
-                             rgb_list[self.nb_growing-i-1].get_shape().as_list()[2],
-                             f)
-                else:
-                    shape = d_list[i-1].output_shape[1:]
-                input_ = tf.keras.layers.Input(shape)
-                if i == self.nb_growing-1:
-                    d = Model(input_, last_d_block(input_, f), name='d_%d' % i)
-                else:
-                    d = Model(input_, d_block(input_, f), name='d_%d' % i)
-                if not reuse:
-                    self.inputs.append(input_)
-                else:
-                    self.inputs_.append(input_)
-                d_list.append(d)
-                o_list_.append(d.outputs[0])
-
-            d_real = []
-            for i in range(self.nb_growing):
-                ds = d_list[i:]
-                x = self.inputs[i]
-                for d in ds:
-                    x = d(x)
-                d_real.append(x)
-
-            d_fake = []
-            for i in range(self.nb_growing):
-                ds = d_list[i:]
-                x = rgb_list[self.nb_growing-i-1]
-                with tf.variable_scope(None, 'fromRGB'):
-                    f = self.inputs[i].shape[-1]
-                    x = conv2d(x, f, activation_='lrelu')
-                for d in ds:
-                    x = d(x)
-                d_fake.append(x)
-            return d_real, d_fake
+            with tf.variable_scope('fromRGB_%d' % growing_index):
+                f = self.filters[growing_index]
+                x = conv2d(x, f, activation_='tanh')
+            for block in self.blocks[:growing_index+1][::-1]:
+                x = block(inputs=x)
+            x = flatten(x)
+            x = self.dense(x)
+            return x
 
     @property
     def vars(self):
@@ -108,15 +84,11 @@ class Discriminator:
 if __name__ == '__main__':
     _x = tf.keras.layers.Input((512, ), batch_size=2)
     _g = Generator(nb_growing=5)
-    a = _g(_x, 1)
-    # _d = Discriminator(nb_growing=5)
-    # rgbs = _g(_x)
-    # _d_real, _d_fake = _d(rgbs)
-    # _d_real, _d_fake = _d(rgbs, reuse=True)
+    rgbs = [_g(_x, growing_index=i) for i in range(5)]
+    _d = Discriminator(nb_growing=5)
+    _d_res = [_d(tf.keras.layers.Input((*_d.resolutions[i], _d.filters[i])), growing_index=i)
+              for i in range(5)]
     sess = tf.keras.backend.get_session()
     tf.summary.FileWriter('./logs', graph=sess.graph)
-    # sess.run(tf.global_variables_initializer())
-    # import numpy as np
-    # __x = np.random.uniform(size=(2, 4, 4, 512))
-    # print(sess.run(_d_real[-1],
-    #                feed_dict={_d.inputs[-1]: __x}))
+    for v in tf.global_variables():
+        print(v)
