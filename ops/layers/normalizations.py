@@ -29,7 +29,7 @@ class PixelNorm(Layer):
 
     def call(self, x, *args, **kwargs):
         return x / K.sqrt(K.mean(K.square(x),
-                                 axis=1,
+                                 axis=-1,
                                  keepdims=True))
 
     def compute_output_shape(self, input_shape):
