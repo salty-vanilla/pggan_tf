@@ -25,8 +25,10 @@ class FirstGeneratorBlock(Model):
         x = upsampling2d(x, (4, 4))
         x = self.conv1(x)
         x = activation(x, 'lrelu')
+        x = pixel_norm(x)
         x = self.conv2(x)
         x = activation(x, 'lrelu')
+        x = pixel_norm(x)
         return x
 
 
@@ -64,8 +66,10 @@ class GeneratorBlock(Model):
         x = self.up(inputs)
         x = self.conv1(x)
         x = activation(x, 'lrelu')
+        x = pixel_norm(x)
         x = self.conv2(x)
         x = activation(x, 'lrelu')
+        x = pixel_norm(x)
         return x
 
 
@@ -84,7 +88,8 @@ class LastDiscriminatorBlock(Model):
     def call(self, inputs,
              training=None,
              mask=None):
-        x = self.conv1(inputs)
+        x = minibatch_stddev(inputs, group_size=4)
+        x = self.conv1(x)
         x = activation(x, 'lrelu')
         x = self.conv2(x)
         return x
