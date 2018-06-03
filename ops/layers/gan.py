@@ -21,7 +21,7 @@ class MiniBatchStddev(Layer):
         _x = K.reshape(x, (gs, -1, h, w, c))
         _x -= K.mean(_x, axis=0, keepdims=True)
         _x = K.mean(K.square(_x), axis=0)
-        _x = K.sqrt(_x)
+        _x = K.sqrt(_x + K.epsilon())
         _x = K.sum(_x, axis=[1, 2, 3], keepdims=True)
         # _x = K.tile(x, [gs, h, w, 1])
         _x = tf.tile(_x, [gs, h, w, 1])

@@ -40,9 +40,8 @@ class PGGAN:
         self.gp_lambda = gp_lambda
         self.d_norm_eps = d_norm_eps
 
-        self.saver = tf.train.Saver(max_to_keep=None)
-        self.sess = tf.Session()
-        self.model_dir = None
+        self.sess = None
+        self.saver = None
         self.fake = None
 
     def build_loss(self, inputs, growing_step):
@@ -62,10 +61,10 @@ class PGGAN:
         with tf.name_scope('GradientPenalty'):
             epsilon = tf.random_uniform(shape=[self.bs, 1, 1, 1],
                                         minval=0., maxval=1.)
-            differences = fake - inputs
+            differences = self.fake - inputs
             interpolates = inputs + (epsilon * differences)
             gradients = tf.gradients(self.discriminator(interpolates,
-                                                        growing_index=growing_step,
+                                                        growing_step=growing_step,
                                                         reuse=True), [interpolates])[0]
             slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
             gp = tf.reduce_mean(tf.square(slopes - 1.))
@@ -81,11 +80,11 @@ class PGGAN:
 
         model_path = None
         for growing_step in range(self.nb_growing):
+
             resolution = self.discriminator.resolutions[growing_step]
             image_sampler.target_size = resolution
             logdir_ = os.path.join(logdir, '{}_{}'.format(*resolution))
             os.makedirs(logdir_, exist_ok=True)
-            tb_writer = tf.summary.FileWriter(logdir_, graph=self.sess.graph)
             inputs = tf.keras.Input((*resolution, self.channel))
             with tf.name_scope('Loss'):
                 loss_g, loss_d, d_norm, gp = self.build_loss(inputs, growing_step)
@@ -106,10 +105,15 @@ class PGGAN:
                     loss_d_summary = tf.summary.merge([tf.summary.scalar('loss_d', loss_d),
                                                        tf.summary.scalar('discriminator_norm', d_norm),
                                                        tf.summary.scalar('gradient_norm', gp)])
-
-            self.sess.run(tf.global_variables_initializer())
             if growing_step > 0:
+                self.sess.run(tf.global_variables_initializer())
                 self.restore(model_path)
+            else:
+                self.sess = tf.keras.backend.get_session()
+                self.saver = tf.train.Saver(max_to_keep=None)
+                self.sess.run(tf.global_variables_initializer())
+
+            tb_writer = tf.summary.FileWriter(logdir_, graph=self.sess.graph)
 
             batch_size = image_sampler.batch_size
             nb_sample = image_sampler.nb_sample
@@ -126,6 +130,8 @@ class PGGAN:
                 for iter_ in range(1, steps_per_epoch + 1):
                     image_batch = image_sampler()
                     noise_batch = noise_sampler(image_batch.shape[0], self.latent_dim)
+                    if image_batch.shape[0] != batch_size:
+                        continue
                     _, _loss_d, _gp, _d_norm, summary_d =\
                         self.sess.run([opt_d, loss_d, gp, d_norm, loss_d_summary],
                                       feed_dict={inputs: image_batch,
@@ -185,7 +191,7 @@ class PGGAN:
             pil_image.save(dst_path)
 
     def save(self, logdir, epoch):
-        path = logdir+'epoch_%d.ckpt' % epoch
+        path = os.path.join(logdir, 'epoch_%d.ckpt' % epoch)
         self.saver.save(self.sess, save_path=path)
         return path
 

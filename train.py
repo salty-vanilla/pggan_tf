@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--save_steps', '-ss', type=int, default=1)
     parser.add_argument('--visualize_steps', '-vs', type=int, default=1)
     parser.add_argument('--logdir', '-log', type=str, default="../logs")
-    parser.add_argument('--noise_mode', '-nm', type=str, default="uniform")
+    parser.add_argument('--distribution', '-dis', type=str, default="uniform")
     parser.add_argument('--upsampling', '-up', type=str, default="deconv")
     parser.add_argument('--downsampling', '-down', type=str, default="stride")
     parser.add_argument('--lr_d', type=float, default=1e-4)
@@ -31,26 +31,27 @@ def main():
     args = parser.parse_args()
 
     args_to_csv(os.path.join(args.logdir, 'config.csv'), args)
-    exit()
 
     image_sampler = ImageSampler()
-    noise_sampler = NoiseSampler(args.latent_mode)
+    noise_sampler = NoiseSampler(args.distribution)
 
     model = PGGAN(channel=args.channel,
                   latent_dim=args.latent_dim,
                   nb_growing=args.nb_growing,
                   gp_lambda=args.gp_lambda,
-                  d_norm_eps=args.d_norm_ops,
+                  d_norm_eps=args.d_norm_eps,
                   upsampling=args.upsampling,
                   downsampling=args.downsampling,
                   lr_d=args.lr_d,
                   lr_g=args.lr_g)
-    model.fit(image_sampler.flow_from_directory(args.batch_size),
+    model.fit(image_sampler.flow_from_directory(args.image_dir,
+                                                args.batch_size,
+                                                with_class=False),
               noise_sampler,
               nb_epoch=args.nb_epoch,
-              logdir=args.result_dir,
+              logdir=args.logdir,
               save_steps=args.save_steps,
-              visualize_steps=args.visualize_step)
+              visualize_steps=args.visualize_steps)
 
 
 if __name__ == '__main__':
