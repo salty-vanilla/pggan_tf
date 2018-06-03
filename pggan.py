@@ -105,6 +105,7 @@ class PGGAN:
                     loss_d_summary = tf.summary.merge([tf.summary.scalar('loss_d', loss_d),
                                                        tf.summary.scalar('discriminator_norm', d_norm),
                                                        tf.summary.scalar('gradient_norm', gp)])
+                image_summary = tf.summary.image('image', (self.fake+1)*0.5)
             if growing_step > 0:
                 self.sess.run(tf.global_variables_initializer())
                 self.restore(model_path)
@@ -151,8 +152,10 @@ class PGGAN:
                     model_path = self.save(logdir_, epoch)
                 if epoch % visualize_steps == 0:
                     noise_batch = noise_sampler(batch_size, self.latent_dim)
-                    fake = self.sess.run(self.fake,
-                                         feed_dict={self.z: noise_batch})
+                    s = self.sess.run(image_summary,
+                                      feed_dict={self.z: noise_batch})
+                    tb_writer.add_summary(s, global_step)
+
                     # self.visualize()
         print('\nTraining is done ...\n')
 
