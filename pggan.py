@@ -5,134 +5,149 @@ import os
 import csv
 import time
 from PIL import Image
+from models import Generator, Discriminator
+from ops.losses.gan import generator_loss, \
+    discriminator_loss, \
+    gradient_penalty, \
+    discriminator_norm
 
 
-class WGAN:
-    def __init__(self, generator,
-                 discriminator,
-                 lambda_=10,
-                 is_training=True):
-        self.discriminator = discriminator
-        self.generator = generator
-        self.image_shape = self.discriminator.input_shape
-        self.noise_dim = self.generator.noise_dim
-        self.noise = Input((self.noise_dim, ), name='z')
+class PGGAN:
+    def __init__(self,
+                 channel=3,
+                 latent_dim=500,
+                 nb_growing=8,
+                 gp_lambda=10,
+                 d_norm_eps=1e-3,
+                 upsampling='subpixel',
+                 downsampling='stride',
+                 lr_d=1e-4,
+                 lr_g=1e-4):
+        self.channel = channel
+        self.lr_d = lr_d
+        self.lr_g = lr_g
+        self.nb_growing = nb_growing
+        self.discriminator = Discriminator(nb_growing=nb_growing,
+                                           downsampling=downsampling,
+                                           channel=self.channel)
+        self.generator = Generator(nb_growing=nb_growing,
+                                   upsampling_=upsampling,
+                                   channel=self.channel)
+        self.latent_dim = latent_dim
+        self.z = Input((self.latent_dim, ), name='z')
+        self.bs = tf.placeholder(tf.int32, shape=[])
 
-        self.rgbs = self.generator(self.noise)
-        self.d_reals, self.d_fakes = self.discriminator(self.rgbs)
+        self.gp_lambda = gp_lambda
+        self.d_norm_eps = d_norm_eps
 
-        self.images = discriminator.inputs
+        self.saver = tf.train.Saver(max_to_keep=None)
+        self.sess = tf.Session()
+        self.model_dir = None
+        self.fake = None
 
-        with tf.name_scope('loss'):
-            self.loss_d = []
-            self.loss_g = []
-            for i in range(len(self.rgbs)):
-                loss_d = -tf.reduce_mean(self.d_fakes[i])
-                loss_g = -(tf.reduce_mean(self.d_reals[i])
-                           - tf.reduce_mean(self.d_fakes[i]))
-                self.loss_d.append(loss_d)
-                self.loss_g.append(loss_g)
+    def build_loss(self, inputs, growing_step):
+        self.fake = self.generator(self.z,
+                                   growing_step=growing_step)
+        d_real = self.discriminator(inputs,
+                                    growing_step=growing_step)
+        d_fake = self.discriminator(self.fake,
+                                    growing_step=growing_step,
+                                    reuse=True)
+
+        loss_g = generator_loss(d_fake, metrics='WD')
+        loss_d = discriminator_loss(d_real, d_fake, metrics='WD')
+        d_norm = discriminator_norm(d_real)
 
         # Gradient Penalty
         with tf.name_scope('GradientPenalty'):
-            self.epsilon_first_dim = tf.placeholder(tf.int32, shape=[])
-            epsilon = tf.random_uniform(shape=[self.epsilon_first_dim, 1, 1, 1],
+            epsilon = tf.random_uniform(shape=[self.bs, 1, 1, 1],
                                         minval=0., maxval=1.)
+            differences = fake - inputs
+            interpolates = inputs + (epsilon * differences)
+            gradients = tf.gradients(self.discriminator(interpolates,
+                                                        growing_index=growing_step,
+                                                        reuse=True), [interpolates])[0]
+            slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
+            gp = tf.reduce_mean(tf.square(slopes - 1.))
 
-            self.gradient_penalty = []
-            for i in range(len(self.rgbs)):
-                differences = self.rgbs[i] - self.images[i]
-                interpolates = self.images[i] + (epsilon * differences)
-                gradients = tf.gradients(self.discriminator(interpolates), [interpolates])[0]
-                slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
-                gradient_penalty = tf.reduce_mean(tf.square(slopes - 1.))
-                self.gradient_penalty.append(gradient_penalty)
+        return loss_g, loss_d, d_norm, gp
 
-        # Optimizer
-        if is_training:
-            with tf.name_scope('Optimizer'):
-                # WGAN
-                if lambda_ == 0:
-                    self.opt_d = tf.train.RMSPropOptimizer(learning_rate=5e-5) \
-                        .minimize(self.loss_d, var_list=self.discriminator.vars)
-                    self.opt_g = tf.train.RMSPropOptimizer(learning_rate=5e-5) \
-                        .minimize(self.loss_g, var_list=self.generator.vars)
-                    self.clip_weights = [v.assign(tf.clip_by_value(v, -0.01, 0.01))
-                                         for v in self.discriminator.vars]
-                # WGAN-GP
-                else:
-                    self.opt_d = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5, beta2=0.9) \
-                        .minimize(self.loss_d + lambda_ * self.gradient_penalty,
-                                  var_list=self.discriminator.vars)
-                    self.opt_g = tf.train.AdamOptimizer(learning_rate=1e-4, beta1=0.5, beta2=0.9) \
-                        .minimize(self.loss_g, var_list=self.generator.vars)
-                    self.clip_weights = None
-        self.saver = tf.train.Saver()
-        self.sess = tf.Session()
-        self.model_dir = None
-        self.sess.run(tf.global_variables_initializer())
-        self.is_training = False
-        tf.summary.FileWriter('../logs', graph=self.sess.graph)
+    def fit(self, image_sampler,
+            noise_sampler,
+            nb_epoch=1000,
+            visualize_steps=1,
+            save_steps=1,
+            logdir='../logs'):
 
-    def fit(self, image_sampler, noise_sampler, nb_epoch=1000,
-            initial_steps=20, initial_critics=100, normal_critics=5,
-            visualize_steps=1, save_steps=1,
-            result_dir='result', model_dir='model'):
-        batch_size = image_sampler.batch_size
-        nb_sample = image_sampler.nb_sample
-        self.model_dir = model_dir
+        model_path = None
+        for growing_step in range(self.nb_growing):
+            resolution = self.discriminator.resolutions[growing_step]
+            image_sampler.target_size = resolution
+            logdir_ = os.path.join(logdir, '{}_{}'.format(*resolution))
+            os.makedirs(logdir_, exist_ok=True)
+            tb_writer = tf.summary.FileWriter(logdir_, graph=self.sess.graph)
+            inputs = tf.keras.Input((*resolution, self.channel))
+            with tf.name_scope('Loss'):
+                loss_g, loss_d, d_norm, gp = self.build_loss(inputs, growing_step)
+                merged_loss_d = loss_d + self.gp_lambda*gp + self.d_norm_eps*d_norm
 
-        # prepare for csv
-        if not os.path.exists(result_dir):
-            os.makedirs(result_dir)
-        f = open(os.path.join(result_dir, 'learning_log.csv'), 'w')
-        writer = csv.writer(f, lineterminator='\n')
+            with tf.variable_scope('Optimizer'):
+                opt_d = tf.train.AdamOptimizer(learning_rate=self.lr_d, beta1=0.5, beta2=0.99) \
+                    .minimize(merged_loss_d,
+                              var_list=self.discriminator.vars)
+                opt_g = tf.train.AdamOptimizer(learning_rate=self.lr_g, beta1=0.5, beta2=0.99) \
+                    .minimize(loss_g,
+                              var_list=self.generator.vars)
 
-        # calc steps_per_epoch
-        steps_per_epoch = nb_sample // batch_size
-        if nb_sample % batch_size != 0:
-            steps_per_epoch += 1
+            with tf.variable_scope('Summary'):
+                with tf.variable_scope('Generator'):
+                    loss_g_summary = tf.summary.scalar('loss_g', loss_g)
+                with tf.variable_scope('Discriminator'):
+                    loss_d_summary = tf.summary.merge([tf.summary.scalar('loss_d', loss_d),
+                                                       tf.summary.scalar('discriminator_norm', d_norm),
+                                                       tf.summary.scalar('gradient_norm', gp)])
 
-        # for display and csv
-        loss_g = 0
-        w_dis = 0
-        writer.writerow(['loss_d', 'loss_g', 'gp', 'w_distance'])
+            self.sess.run(tf.global_variables_initializer())
+            if growing_step > 0:
+                self.restore(model_path)
 
-        # fit loop
-        for epoch in range(1, nb_epoch + 1):
-            print('\nepoch {} / {}'.format(epoch, nb_epoch))
-            start = time.time()
-            n_critics = initial_critics if epoch < initial_steps else normal_critics
-            for iter_ in range(1, steps_per_epoch + 1):
-                image_batch = image_sampler()
-                noise_batch = noise_sampler(image_batch.shape[0], self.noise_dim)
-                if self.clip_weights is not None:
-                    self.sess.run(self.clip_weights)
-                _, loss_d, gradient_penalty = \
-                    self.sess.run([self.opt_d, self.loss_d, self.gradient_penalty],
-                                  feed_dict={self.image: image_batch,
-                                             self.noise: noise_batch,
-                                             self.epsilon_first_dim: image_batch.shape[0],
-                                             })
-                if iter_ % n_critics == 0:
-                    # print noise_batch.shape, self.noise, self.generate, self.image
-                    _, loss_g = self.sess.run([self.opt_g, self.loss_g],
-                                              feed_dict={self.noise: noise_batch})
-                    w_dis = self.sess.run(self.loss_d,
-                                          feed_dict={self.image: image_batch,
-                                                     self.noise: noise_batch
-                                                     })
-                    w_dis = -w_dis
-                print('iter : {} / {}  {:.1f}[s]  loss_d : {:.4f}  loss_g : {:.4f}  gp : {:.4f}, w_dis : {:.4f}\r'
-                      .format(iter_, steps_per_epoch, time.time() - start,
-                              loss_d, loss_g, gradient_penalty, w_dis), end='')
-                writer.writerow([loss_d, loss_g, gradient_penalty, w_dis])
-            if epoch % visualize_steps == 0:
-                noise_batch = noise_sampler(batch_size, self.noise_dim)
-                self.visualize(os.path.join(result_dir, 'epoch_{}'.format(epoch)),
-                               noise_batch, image_sampler.data_to_image)
-            if epoch % save_steps == 0:
-                self.save(epoch)
+            batch_size = image_sampler.batch_size
+            nb_sample = image_sampler.nb_sample
+
+            # calc steps_per_epoch
+            steps_per_epoch = nb_sample // batch_size
+            if nb_sample % batch_size != 0:
+                steps_per_epoch += 1
+
+            global_step = 0
+            for epoch in range(1, nb_epoch + 1):
+                print('\nepoch {} / {}'.format(epoch, nb_epoch))
+                start = time.time()
+                for iter_ in range(1, steps_per_epoch + 1):
+                    image_batch = image_sampler()
+                    noise_batch = noise_sampler(image_batch.shape[0], self.latent_dim)
+                    _, _loss_d, _gp, _d_norm, summary_d =\
+                        self.sess.run([opt_d, loss_d, gp, d_norm, loss_d_summary],
+                                      feed_dict={inputs: image_batch,
+                                                 self.z: noise_batch,
+                                                 self.bs: image_batch.shape[0]})
+                    _, _loss_g, summary_g = self.sess.run([opt_g, loss_g, loss_g_summary],
+                                                          feed_dict={self.z: noise_batch})
+
+                    print('iter : {} / {}  {:.1f}[s]  loss_d : {:.4f}  loss_g : {:.4f}  \r'
+                          .format(iter_, steps_per_epoch, time.time() - start,
+                                  _loss_d, _loss_g), end='')
+                    tb_writer.add_summary(summary_d, global_step)
+                    tb_writer.add_summary(summary_g, global_step)
+                    tb_writer.flush()
+                    global_step += 1
+                if epoch % save_steps == 0:
+                    model_path = self.save(logdir_, epoch)
+                if epoch % visualize_steps == 0:
+                    noise_batch = noise_sampler(batch_size, self.latent_dim)
+                    fake = self.sess.run(self.fake,
+                                         feed_dict={self.z: noise_batch})
+                    # self.visualize()
         print('\nTraining is done ...\n')
 
     def restore(self, file_path, mode='both'):
@@ -169,11 +184,10 @@ class WGAN:
             pil_image = Image.fromarray(np.uint8(image))
             pil_image.save(dst_path)
 
-    def save(self, epoch):
-        dst_dir = os.path.join(self.model_dir, "epoch_{}".format(epoch))
-        if not os.path.exists(dst_dir):
-            os.makedirs(dst_dir)
-        return self.saver.save(self.sess, save_path=os.path.join(dst_dir, 'model.ckpt'))
+    def save(self, logdir, epoch):
+        path = logdir+'epoch_%d.ckpt' % epoch
+        self.saver.save(self.sess, save_path=path)
+        return path
 
     def predict(self, x, batch_size=16):
         outputs = np.empty([0] + list(self.image_shape))
@@ -186,5 +200,5 @@ class WGAN:
         return outputs
 
     def predict_on_batch(self, x):
-        return self.sess.run(self.generate,
-                             feed_dict={self.noise: x})
+        return self.sess.run(self.fake,
+                             feed_dict={self.z: x})

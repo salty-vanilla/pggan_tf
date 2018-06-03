@@ -22,15 +22,15 @@ class Generator:
                     self.blocks.append(GeneratorBlock(f, upsampling_, name='block_%d' % i))
 
     def __call__(self, x,
-                 growing_index,
+                 growing_step,
                  reuse=False,
                  *args, **kwargs):
         with tf.variable_scope(self.name) as vs:
             if reuse:
                 vs.reuse_variables()
-            for block in self.blocks[:growing_index+1]:
+            for block in self.blocks[:growing_step + 1]:
                 x = block(inputs=x)
-            with tf.variable_scope('toRGB_%d' % growing_index):
+            with tf.variable_scope('toRGB_%d' % growing_step):
                 x = conv2d(x, self.channel, activation_='tanh')
                 return x
 
@@ -61,16 +61,16 @@ class Discriminator:
             self.dense = Dense(1)
 
     def __call__(self, x,
-                 growing_index,
+                 growing_step,
                  reuse=False,
                  *args, **kwargs):
         with tf.variable_scope(self.name) as vs:
             if reuse:
                 vs.reuse_variables()
-            with tf.variable_scope('fromRGB_%d' % growing_index):
-                f = self.filters[growing_index]
+            with tf.variable_scope('fromRGB_%d' % growing_step):
+                f = self.filters[growing_step]
                 x = conv2d(x, f, activation_='tanh')
-            for block in self.blocks[:growing_index+1][::-1]:
+            for block in self.blocks[:growing_step + 1][::-1]:
                 x = block(inputs=x)
             x = flatten(x)
             x = self.dense(x)
