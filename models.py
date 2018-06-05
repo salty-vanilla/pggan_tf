@@ -84,9 +84,9 @@ class Discriminator:
 if __name__ == '__main__':
     _x = tf.keras.layers.Input((512, ), batch_size=2)
     _g = Generator(nb_growing=5)
-    rgbs = [_g(_x, growing_index=i) for i in range(5)]
+    rgbs = [_g(_x, growing_step=i) for i in range(5)]
     _d = Discriminator(nb_growing=5)
-    _d_res = [_d(tf.keras.layers.Input((*_d.resolutions[i], _d.filters[i])), growing_index=i)
+    _d_res = [_d(tf.keras.layers.Input((*_d.resolutions[i], _d.filters[i])), growing_step=i)
               for i in range(5)]
     sess = tf.keras.backend.get_session()
     tf.summary.FileWriter('./logs', graph=sess.graph)

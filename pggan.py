@@ -80,7 +80,6 @@ class PGGAN:
 
         model_path = None
         for growing_step in range(self.nb_growing):
-
             resolution = self.discriminator.resolutions[growing_step]
             image_sampler.target_size = resolution
             logdir_ = os.path.join(logdir, '{}_{}'.format(*resolution))
@@ -90,7 +89,7 @@ class PGGAN:
                 loss_g, loss_d, d_norm, gp = self.build_loss(inputs, growing_step)
                 merged_loss_d = loss_d + self.gp_lambda*gp + self.d_norm_eps*d_norm
 
-            with tf.variable_scope('Optimizer'):
+            with tf.variable_scope('Optimizer', reuse=tf.AUTO_REUSE):
                 opt_d = tf.train.AdamOptimizer(learning_rate=self.lr_d, beta1=0.5, beta2=0.99) \
                     .minimize(merged_loss_d,
                               var_list=self.discriminator.vars)
@@ -159,8 +158,7 @@ class PGGAN:
                     # self.visualize()
         print('\nTraining is done ...\n')
 
-    def restore(self, file_path, mode='both'):
-        assert mode in ['both', 'discriminator']
+    def restore(self, file_path):
         reader = tf.train.NewCheckpointReader(file_path)
         saved_shapes = reader.get_variable_to_shape_map()
         var_names = sorted([(var.name, var.name.split(':')[0])
@@ -171,8 +169,6 @@ class PGGAN:
                                 x.name.split(':')[0], tf.global_variables()), tf.global_variables()))
         with tf.variable_scope('', reuse=True):
             for var_name, saved_var_name in var_names:
-                if mode == 'discriminator' and 'discriminator' not in var_name:
-                    continue
                 current_var = var_dict[saved_var_name]
                 var_shape = current_var.get_shape().as_list()
                 if var_shape == saved_shapes[saved_var_name]:
